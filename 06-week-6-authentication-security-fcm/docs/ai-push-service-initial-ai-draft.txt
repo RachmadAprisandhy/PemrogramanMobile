@@ -1,0 +1,240 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:go_router/go_router.dart';
+
+/// Register this top-level handler in main() before runApp:
+/// FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+///
+/// This handler must stay top-level and must not use BuildContext, GoRouter,
+/// Riverpod containers, or other UI-bound objects. Keep background work short.
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Firebase is normally initialized before registering the handler. Initialize
+  // it here as well because Android can start a separate background isolate.
+  // If the app uses non-default FirebaseOptions, pass those options here.
+  await Firebase.initializeApp();
+
+  // Do background data processing here if needed. Do not show a local
+  // notification for a message that already includes a notification payload:
+  // FCM displays those automatically while the app is backgrounded.
+  debugPrint('Background FCM message: ${message.messageId}');
+}
+
+typedef PostDeviceToken = Future<void> Function({
+  required String token,
+  required String platform,
+});
+
+/// Coordinates FCM permissions, token registration, foreground notifications,
+/// notification taps, and the campus announcements topic.
+///
+/// The injected [postDeviceToken] should send the token to POST /devices using
+/// the app's existing authenticated API client. Navigation is done through the
+/// injected [router], so this service never needs a BuildContext.
+class PushService {
+  PushService({
+    required GoRouter router,
+    required PostDeviceToken postDeviceToken,
+    FirebaseMessaging? messaging,
+    FlutterLocalNotificationsPlugin? localNotifications,
+  })  : _router = router,
+        _postDeviceToken = postDeviceToken,
+        _messaging = messaging ?? FirebaseMessaging.instance,
+        _localNotifications =
+            localNotifications ?? FlutterLocalNotificationsPlugin();
+
+  static const String announcementsTopic = 'pengumuman-kampus';
+  static const String _androidChannelId = 'campus_announcements';
+  static const String _androidChannelName = 'Pengumuman kampus';
+
+  final GoRouter _router;
+  final PostDeviceToken _postDeviceToken;
+  final FirebaseMessaging _messaging;
+  final FlutterLocalNotificationsPlugin _localNotifications;
+
+  StreamSubscription<RemoteMessage>? _foregroundSubscription;
+  StreamSubscription<RemoteMessage>? _openedSubscription;
+  StreamSubscription<String>? _tokenSubscription;
+  bool _initialized = false;
+
+  /// Initialize once during app startup, after Firebase.initializeApp().
+  Future<void> initialize() async {
+    if (_initialized) return;
+    _initialized = true;
+
+    await _initializeLocalNotifications();
+    await requestPermission();
+
+    final token = await _messaging.getToken();
+    if (token != null && token.isNotEmpty) {
+      await _registerToken(token);
+    }
+
+    _tokenSubscription = _messaging.onTokenRefresh.listen((token) {
+      unawaited(_registerToken(token));
+    });
+
+    _foregroundSubscription = FirebaseMessaging.onMessage.listen((message) {
+      unawaited(_showForegroundNotification(message));
+    });
+
+    _openedSubscription = FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      _navigateFromData(message.data);
+    });
+
+    final initialMessage = await _messaging.getInitialMessage();
+    if (initialMessage != null) {
+      _navigateFromData(initialMessage.data);
+    }
+  }
+
+  /// Request notification authorization.
+  ///
+  /// iOS: FirebaseMessaging.requestPermission() triggers the Apple permission
+  /// prompt. Configure APNs capability, push entitlements, and Firebase APNs
+  /// credentials separately in the iOS project.
+  ///
+  /// Android 13+ (API 33+): FCM's requestPermission requests POST_NOTIFICATIONS
+  /// at runtime. The Android manifest must also declare that permission.
+  /// Earlier Android versions do not show this runtime permission prompt.
+  Future<NotificationSettings> requestPermission() async {
+    final settings = await _messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+    );
+
+    // Android 13+: explicitly request permission for local notifications too.
+    // FCM and local notifications both depend on the OS notification permission.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      final androidPlugin = _localNotifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      await androidPlugin?.requestNotificationsPermission();
+    }
+
+    // iOS: request permission for notifications emitted by the local plugin.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      final iosPlugin = _localNotifications
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>();
+      await iosPlugin?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+    }
+
+    return settings;
+  }
+
+  Future<void> subscribeToAnnouncements() =>
+      _messaging.subscribeToTopic(announcementsTopic);
+
+  Future<void> unsubscribeFromAnnouncements() =>
+      _messaging.unsubscribeFromTopic(announcementsTopic);
+
+  Future<void> dispose() async {
+    await _foregroundSubscription?.cancel();
+    await _openedSubscription?.cancel();
+    await _tokenSubscription?.cancel();
+    _initialized = false;
+  }
+
+  Future<void> _initializeLocalNotifications() async {
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    );
+
+    await _localNotifications.initialize(
+      settings,
+      onDidReceiveNotificationResponse: (response) {
+        final payload = response.payload;
+        if (payload == null || payload.isEmpty) return;
+        try {
+          final data = jsonDecode(payload);
+          if (data is Map<String, dynamic>) _navigateFromData(data);
+        } on FormatException {
+          debugPrint('Ignoring invalid notification payload');
+        }
+      },
+    );
+
+    // Android requires a notification channel (Android 8+).
+    final androidPlugin = _localNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    await androidPlugin?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        _androidChannelId,
+        _androidChannelName,
+        description: 'Informasi dan pengumuman kampus',
+        importance: Importance.high,
+      ),
+    );
+  }
+
+  Future<void> _registerToken(String token) => _postDeviceToken(
+        token: token,
+        platform: _platformName,
+      );
+
+  String get _platformName {
+    if (kIsWeb) return 'web';
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => 'android',
+      TargetPlatform.iOS => 'ios',
+      TargetPlatform.macOS => 'macos',
+      TargetPlatform.windows => 'windows',
+      TargetPlatform.linux => 'linux',
+      TargetPlatform.fuchsia => 'fuchsia',
+    };
+  }
+
+  Future<void> _showForegroundNotification(RemoteMessage message) async {
+    // Manual foreground display: do not enable iOS foreground presentation
+    // options at the same time, or iOS may show a duplicate notification.
+    final notification = message.notification;
+    final title = notification?.title ?? message.data['title'] as String?;
+    final body = notification?.body ?? message.data['body'] as String?;
+    if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
+      return;
+    }
+
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _androidChannelId,
+        _androidChannelName,
+        channelDescription: 'Informasi dan pengumuman kampus',
+        importance: Importance.high,
+        priority: Priority.high,
+        icon: '@mipmap/ic_launcher',
+      ),
+      iOS: DarwinNotificationDetails(),
+    );
+
+    await _localNotifications.show(
+      message.hashCode,
+      title,
+      body,
+      details,
+      payload: jsonEncode(message.data),
+    );
+  }
+
+  void _navigateFromData(Map<String, dynamic> data) {
+    final route = data['route'];
+    if (route is! String || route.isEmpty || !route.startsWith('/')) return;
+
+    // GoRouter is safe here because it is injected as an app-level service.
+    // This class never reads or stores BuildContext.
+    _router.go(route);
+  }
+}
