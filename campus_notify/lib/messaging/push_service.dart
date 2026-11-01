@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
+import '../routes.dart';
 
 const _announcementsTopic = 'pengumuman-kampus';
 const _androidChannelId = 'campus_announcements';
@@ -238,8 +239,8 @@ class PushService {
     );
   }
 
-  void _navigateFromData(Map<String, dynamic> data) {
-    _navigateToRoute(_stringValue(data['route']));
+    void _navigateFromData(Map<String, dynamic> data) {
+    router.go(AppRoutes.routeFromMessage(data));
   }
 
   void _navigateToRoute(String? route) {

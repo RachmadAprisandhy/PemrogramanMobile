@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'routes.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,11 +39,11 @@ class _CampusNotifyAppState extends ConsumerState<CampusNotifyApp> {
         if (authState.isLoading) return null;
 
         final loggedIn = authState.value ?? false;
-        final goingLogin = state.matchedLocation == '/login';
+        final goingLogin = state.matchedLocation == AppRoutes.login;
 
         if (!loggedIn && !goingLogin) {
           return Uri(
-            path: '/login',
+            path: AppRoutes.login,
             queryParameters: {'from': state.uri.toString()},
           ).toString();
         }
@@ -58,15 +59,21 @@ class _CampusNotifyAppState extends ConsumerState<CampusNotifyApp> {
         return null;
       },
       routes: [
-        GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
-        GoRoute(path: '/', builder: (context, state) => const MyHomePage()),
+       GoRoute(
+          path: AppRoutes.login,
+          builder: (context, state) => const LoginPage(),
+        ),
         GoRoute(
-          path: '/pengumuman/:id',
+          path: AppRoutes.home,
+          builder: (context, state) => const MyHomePage(),
+        ),
+        GoRoute(
+          path: AppRoutes.announcementPattern,
           builder: (context, state) =>
               AnnouncementPage(id: state.pathParameters['id'] ?? ''),
         ),
-      ],
-    );
+              ],
+            );
 
     unawaited(_initializePushHandlers());
   }
@@ -194,7 +201,7 @@ class MyHomePage extends ConsumerWidget {
       ),
       body: Center(
         child: FilledButton(
-          onPressed: () => context.go('/pengumuman/demo'),
+          onPressed: () => context.go(AppRoutes.announcement('demo')),
           child: const Text('Buka contoh pengumuman'),
         ),
       ),
