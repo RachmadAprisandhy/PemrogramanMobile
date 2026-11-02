@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import '../lib/data/auth_repository.dart';
-import '../lib/routes.dart';
+import 'package:campus_notify/data/auth_repository.dart';
+import 'package:campus_notify/routes.dart';
 
 void main() {
   test('payload FCM membuka route pengumuman yang benar', () {
@@ -22,7 +22,7 @@ void main() {
   });
 
   test('refresh token menghasilkan access token baru', () async {
-    final repository = AuthRepository();
+    final repository = MockAuthRepository();
 
     final renewed = await repository.refresh('mock-refresh');
 
@@ -30,11 +30,8 @@ void main() {
   });
 
   test('refresh gagal jika refresh token kosong', () async {
-    final repository = AuthRepository();
+    final repository = MockAuthRepository();
 
-    await expectLater(
-      repository.refresh(''),
-      throwsA(isA<Exception>()),
-    );
+    await expectLater(repository.refresh(''), throwsA(isA<Exception>()));
   });
 }
